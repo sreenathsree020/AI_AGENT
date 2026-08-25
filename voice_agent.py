@@ -183,7 +183,13 @@ class VoiceAgent:
                 max_tokens=Config.MAX_TOKENS,
                 temperature=Config.TEMPERATURE
             )
-            reply = response.choices[0].message.content.strip()
+            raw_reply = response.choices[0].message.content.strip()
+            # Strip internal chain-of-thought (<think>...</think>) tags from reasoning models
+            import re
+            reply = re.sub(r"<think>.*?</think>", "", raw_reply, flags=re.DOTALL).strip()
+            if not reply:
+                reply = raw_reply
+
             elapsed = (time.time() - t0) * 1000
             logger.info(f"[LLM] Response ({elapsed:.0f}ms): \"{reply[:100]}{'...' if len(reply) > 100 else ''}\"")
             return reply

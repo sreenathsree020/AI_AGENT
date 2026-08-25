@@ -17,10 +17,14 @@ class ExotelHandler:
         self.voice_agent = voice_agent
         self.session_manager = session_manager
 
+    def _get_host(self) -> str:
+        url = Config.KOYEB_APP_URL or "localhost:8000"
+        return url.replace("https://", "").replace("http://", "").strip("/")
+
     # ---------- Gather Method (simpler, no WebSocket) ----------
     def incoming_call_gather(self, call_sid: str) -> str:
         """Return Exotel XML for initial greeting and gather."""
-        koyeb_url = Config.KOYEB_APP_URL
+        koyeb_url = self._get_host()
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<Response>\n'
@@ -33,7 +37,7 @@ class ExotelHandler:
 
     async def gather_response(self, call_sid: str, speech_result: str) -> str:
         """Process gathered speech and return next Exotel XML."""
-        koyeb_url = Config.KOYEB_APP_URL
+        koyeb_url = self._get_host()
         if speech_result:
             ai_text = await self.voice_agent.generate_response(speech_result, call_sid)
             self.session_manager.add_conversation_turn(call_sid, speech_result, ai_text)
@@ -54,7 +58,7 @@ class ExotelHandler:
     # ---------- Media Streams Method (real-time, lower latency) ----------
     def incoming_call_stream(self, call_sid: str) -> str:
         """Return Exotel XML that connects to a WebSocket stream."""
-        koyeb_url = Config.KOYEB_APP_URL
+        koyeb_url = self._get_host()
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<Response>\n'

@@ -74,30 +74,28 @@ class ExotelHandler:
         )
 
     async def send_audio_chunks(self, websocket, stream_sid: str, mulaw_audio: bytes):
-        """Stream native 8kHz μ-law audio chunks directly to Exotel in 20ms frames."""
+        """Stream native 8kHz μ-law audio chunks directly to Exotel in smooth 80ms frames."""
         if not mulaw_audio:
             return
 
         self._is_speaking = True
         try:
-            chunk_size = 160  # 160 bytes = 20ms at 8000Hz 8-bit mono
+            chunk_size = 640  # 640 bytes = 80ms at 8000Hz 8-bit mono
             total_chunks = (len(mulaw_audio) + chunk_size - 1) // chunk_size
-            logger.info(f"[MEDIA_OUT] Streaming {len(mulaw_audio)} bytes native μ-law ({total_chunks} chunks) to stream: {stream_sid}")
+            logger.info(f"[MEDIA_OUT] Streaming {len(mulaw_audio)} bytes native μ-law ({total_chunks} chunks of 80ms) to stream: {stream_sid}")
 
             for i in range(0, len(mulaw_audio), chunk_size):
                 chunk = mulaw_audio[i:i + chunk_size]
                 payload = base64.b64encode(chunk).decode("utf-8")
                 msg = {
                     "event": "media",
+                    "streamSid": stream_sid or "",
                     "media": {
                         "payload": payload
                     }
                 }
-                if stream_sid and stream_sid != "unknown_stream":
-                    msg["streamSid"] = stream_sid
-
                 await websocket.send_text(json.dumps(msg))
-                await asyncio.sleep(0.019)  # 20ms pacing
+                await asyncio.sleep(0.078)  # 80ms smooth pacing
 
             logger.info(f"[MEDIA_OUT] Finished playing audio to caller (stream: {stream_sid})")
         except Exception as e:
@@ -128,9 +126,10 @@ class ExotelHandler:
                 data = json.loads(message)
                 event = data.get("event")
 
-                # Extract streamSid from any event
-                if not stream_sid:
-                    stream_sid = data.get("streamSid") or data.get("start", {}).get("streamSid") or data.get("stream_sid")
+                # Always extract and update streamSid whenever available
+                incoming_sid = data.get("streamSid") or data.get("stream_sid") or data.get("start", {}).get("streamSid")
+                if incoming_sid:
+                    stream_sid = incoming_sid
 
                 if event == "connected":
                     protocol = data.get("protocol", "Call")
@@ -138,7 +137,7 @@ class ExotelHandler:
 
                 elif event == "start":
                     start_data = data.get("start", {})
-                    stream_sid = data.get("streamSid") or start_data.get("streamSid") or stream_sid
+                    stream_sid = data.get("streamSid") or start_data.get("streamSid") or data.get("stream_sid") or stream_sid
                     extracted_call_sid = data.get("callSid") or start_data.get("callSid")
                     if extracted_call_sid and extracted_call_sid != "unknown":
                         call_sid = extracted_call_sid

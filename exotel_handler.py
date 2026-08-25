@@ -17,6 +17,7 @@ class ExotelHandler:
     def __init__(self, voice_agent: VoiceAgent, session_manager: SessionManager):
         self.voice_agent = voice_agent
         self.session_manager = session_manager
+        self._is_speaking = False
 
     def _get_host(self) -> str:
         url = Config.KOYEB_APP_URL or "localhost:8000"
@@ -77,10 +78,11 @@ class ExotelHandler:
         if not mulaw_audio:
             return
 
+        self._is_speaking = True
         try:
             chunk_size = 160  # 160 bytes = 20ms at 8000Hz 8-bit mono
             total_chunks = (len(mulaw_audio) + chunk_size - 1) // chunk_size
-            logger.info(f"[MEDIA_OUT] Streaming {len(mulaw_audio)} bytes native μ-law ({total_chunks} chunks of 20ms) to stream {stream_sid}")
+            logger.info(f"[MEDIA_OUT] Streaming {len(mulaw_audio)} bytes native μ-law ({total_chunks} chunks) to stream: {stream_sid}")
 
             for i in range(0, len(mulaw_audio), chunk_size):
                 chunk = mulaw_audio[i:i + chunk_size]
@@ -95,12 +97,14 @@ class ExotelHandler:
                     msg["streamSid"] = stream_sid
 
                 await websocket.send_text(json.dumps(msg))
-                # 20ms pacing between frames
-                await asyncio.sleep(0.019)
+                await asyncio.sleep(0.019)  # 20ms pacing
 
-            logger.info(f"[MEDIA_OUT] Completed streaming audio response to stream {stream_sid}")
+            logger.info(f"[MEDIA_OUT] Finished playing audio to caller (stream: {stream_sid})")
         except Exception as e:
             logger.error(f"[MEDIA_OUT] Error sending audio chunks: {e}", exc_info=True)
+        finally:
+            await asyncio.sleep(0.3)  # grace period for acoustic echo
+            self._is_speaking = False
 
     async def process_media_stream(self, websocket, call_sid: str):
         """Handle full bi-directional real-time media stream with Exotel VoiceBot."""
@@ -114,8 +118,9 @@ class ExotelHandler:
         speech_started = False
         silence_frames = 0
         SILENCE_THRESHOLD = 35   # ~700ms of silence at 20ms frames
-        ENERGY_THRESHOLD = 500    # RMS threshold for speech activity
+        ENERGY_THRESHOLD = 600    # Speech activity threshold
         greeting_sent = False
+        self._is_speaking = False
 
         try:
             while True:
@@ -129,7 +134,7 @@ class ExotelHandler:
 
                 if event == "connected":
                     protocol = data.get("protocol", "Call")
-                    logger.info(f"[WS] Exotel media stream connected (protocol={protocol})")
+                    logger.info(f"[WS] Exotel media stream connected (protocol={protocol}) | raw={data}")
 
                 elif event == "start":
                     start_data = data.get("start", {})
@@ -138,7 +143,7 @@ class ExotelHandler:
                     if extracted_call_sid and extracted_call_sid != "unknown":
                         call_sid = extracted_call_sid
 
-                    logger.info(f"[WS] Stream started: streamSid={stream_sid}, callSid={call_sid}")
+                    logger.info(f"[WS] Stream started: streamSid={stream_sid}, callSid={call_sid} | raw={data}")
                     if not self.session_manager.get_session(call_sid):
                         self.session_manager.create_session(call_sid)
 
@@ -155,6 +160,13 @@ class ExotelHandler:
                     media_obj = data.get("media", {})
                     payload = media_obj.get("payload", "")
                     if not payload:
+                        continue
+
+                    # If bot is currently speaking, ignore inbound echo/line noise
+                    if self._is_speaking:
+                        mulaw_audio_buffer = b""
+                        speech_started = False
+                        silence_frames = 0
                         continue
 
                     # Decode base64 μ-law chunk
@@ -184,9 +196,9 @@ class ExotelHandler:
                             if silence_frames >= SILENCE_THRESHOLD:
                                 speech_started = False
                                 silence_frames = 0
-                                logger.info(f"[VAD] Speech ended. Buffer: {len(mulaw_audio_buffer)} bytes. Processing...")
+                                logger.info(f"[VAD] Speech ended. Buffer: {len(mulaw_audio_buffer)} bytes. Processing STT...")
 
-                                if len(mulaw_audio_buffer) >= 2400:  # at least ~300ms
+                                if len(mulaw_audio_buffer) >= 2400:  # at least ~300ms of speech
                                     utterance = mulaw_audio_buffer
                                     mulaw_audio_buffer = b""
                                     asyncio.create_task(self._handle_user_utterance(
@@ -212,6 +224,7 @@ class ExotelHandler:
         finally:
             logger.info(f"[WS] Closing session for call: {call_sid}")
             self.session_manager.end_session(call_sid)
+            self._is_speaking = False
             try:
                 await websocket.close()
             except Exception:

@@ -30,35 +30,74 @@ class VoiceAgent:
             )
             logger.info(f"OpenRouter initialized with model: {Config.OPENROUTER_MODEL} at {Config.OPENROUTER_BASE_URL}")
 
-        # Azure Speech configuration
-        self.speech_config = None
+        # Azure Speech configurations
+        self.speech_config_mulaw = None
+        self.speech_config_pcm = None
+
         if self.speech_key and not self.speech_key.startswith("your_"):
             try:
-                self.speech_config = speechsdk.SpeechConfig(
+                # 1. Telephony Config: 8kHz μ-law (PCMU)
+                self.speech_config_mulaw = speechsdk.SpeechConfig(
                     subscription=self.speech_key,
                     region=self.speech_region
                 )
-                self.speech_config.speech_recognition_language = Config.AZURE_STT_LANGUAGE
-                self.speech_config.speech_synthesis_voice_name = Config.AZURE_TTS_VOICE
+                self.speech_config_mulaw.speech_recognition_language = Config.AZURE_STT_LANGUAGE
+                self.speech_config_mulaw.speech_synthesis_voice_name = Config.AZURE_TTS_VOICE
+                self.speech_config_mulaw.set_speech_synthesis_output_format(
+                    speechsdk.SpeechSynthesisOutputFormat.Raw8Khz8BitMonoMULaw
+                )
+
+                # 2. Browser Config: 16kHz PCM
+                self.speech_config_pcm = speechsdk.SpeechConfig(
+                    subscription=self.speech_key,
+                    region=self.speech_region
+                )
+                self.speech_config_pcm.speech_recognition_language = Config.AZURE_STT_LANGUAGE
+                self.speech_config_pcm.speech_synthesis_voice_name = Config.AZURE_TTS_VOICE
+                self.speech_config_pcm.set_speech_synthesis_output_format(
+                    speechsdk.SpeechSynthesisOutputFormat.Raw16Khz16BitMonoPcm
+                )
+
                 logger.info(f"Azure Speech initialized: region={self.speech_region}, voice={Config.AZURE_TTS_VOICE}")
             except Exception as e:
                 logger.error(f"Error configuring Azure Speech SDK: {e}")
 
-    async def speech_to_text(self, audio_bytes: bytes) -> Optional[str]:
-        """Convert audio (PCM, 16kHz, 16-bit, mono) to text using Azure STT."""
-        if not self.speech_config:
+    async def speech_to_text(self, audio_bytes: bytes, is_mulaw: bool = True) -> Optional[str]:
+        """
+        Convert audio to text using Azure STT.
+        If is_mulaw=True: audio is 8kHz 8-bit μ-law (Exotel telephony).
+        If is_mulaw=False: audio is 16kHz 16-bit PCM (Browser).
+        """
+        config = self.speech_config_mulaw if is_mulaw else self.speech_config_pcm
+        if not config:
             logger.warning("[STT] Azure Speech Config not initialized.")
             return None
 
         t0 = time.time()
-        logger.info(f"[STT] Processing audio buffer ({len(audio_bytes)} bytes)...")
+        logger.info(f"[STT] Processing audio buffer ({len(audio_bytes)} bytes, format={'MULAW_8K' if is_mulaw else 'PCM_16K'})...")
         try:
-            audio_stream = speechsdk.audio.PushAudioInputStream()
+            if is_mulaw:
+                stream_format = speechsdk.audio.AudioStreamFormat(
+                    samples_per_second=8000,
+                    bits_per_sample=8,
+                    channels=1,
+                    wave_stream_format=speechsdk.AudioStreamWaveFormat.MULAW
+                )
+            else:
+                stream_format = speechsdk.audio.AudioStreamFormat(
+                    samples_per_second=16000,
+                    bits_per_sample=16,
+                    channels=1,
+                    wave_stream_format=speechsdk.AudioStreamWaveFormat.PCM
+                )
+
+            audio_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
             audio_stream.write(audio_bytes)
             audio_stream.close()
+
             audio_config = speechsdk.audio.AudioConfig(stream=audio_stream)
             recognizer = speechsdk.SpeechRecognizer(
-                speech_config=self.speech_config,
+                speech_config=config,
                 audio_config=audio_config
             )
             result = await asyncio.to_thread(recognizer.recognize_once)
@@ -81,21 +120,26 @@ class VoiceAgent:
             logger.error(f"[STT] Error during recognition: {e}", exc_info=True)
             return None
 
-    async def text_to_speech(self, text: str) -> bytes:
-        """Convert text to audio (PCM, 16kHz, 16-bit, mono) using Azure TTS."""
-        if not self.speech_config:
+    async def text_to_speech(self, text: str, format_type: str = "mulaw") -> bytes:
+        """
+        Convert text to audio using Azure TTS.
+        format_type='mulaw': Raw 8kHz 8-bit μ-law for Exotel telephony.
+        format_type='pcm': Raw 16kHz 16-bit PCM for Browser testing.
+        """
+        config = self.speech_config_mulaw if format_type == "mulaw" else self.speech_config_pcm
+        if not config:
             logger.warning("[TTS] Azure Speech Config not initialized.")
             return b""
 
         t0 = time.time()
-        logger.info(f"[TTS] Synthesizing audio for: \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
+        logger.info(f"[TTS] Synthesizing ({format_type}): \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
         try:
-            synthesizer = speechsdk.SpeechSynthesizer(speech_config=self.speech_config, audio_config=None)
+            synthesizer = speechsdk.SpeechSynthesizer(speech_config=config, audio_config=None)
             result = await asyncio.to_thread(synthesizer.speak_text_async(text).get)
             elapsed = (time.time() - t0) * 1000
 
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-                logger.info(f"[TTS] Synthesized {len(result.audio_data)} bytes ({elapsed:.0f}ms)")
+                logger.info(f"[TTS] Synthesized {len(result.audio_data)} bytes {format_type} ({elapsed:.0f}ms)")
                 return result.audio_data
             elif result.reason == speechsdk.ResultReason.Canceled:
                 cancellation_details = speechsdk.CancellationDetails(result)
@@ -122,17 +166,15 @@ class VoiceAgent:
         t0 = time.time()
         messages = [{"role": "system", "content": self.system_prompt}]
 
-        # Append previous conversation history if available
         if conversation_history:
-            for turn in conversation_history[-6:]:  # include up to last 6 turns
+            for turn in conversation_history[-6:]:
                 if turn.get("customer"):
                     messages.append({"role": "user", "content": turn["customer"]})
                 if turn.get("agent"):
                     messages.append({"role": "assistant", "content": turn["agent"]})
 
-        # Add current user prompt
         messages.append({"role": "user", "content": user_input})
-        logger.info(f"[LLM] Calling model {Config.OPENROUTER_MODEL} (turns={len(messages)})...")
+        logger.info(f"[LLM] Calling model {Config.OPENROUTER_MODEL} (messages={len(messages)})...")
 
         try:
             response = await self.llm_client.chat.completions.create(

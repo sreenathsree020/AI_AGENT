@@ -9,6 +9,7 @@ class Config:
     # Azure Speech
     AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
     AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "eastus")
+    AZURE_SPEECH_ENDPOINT = os.getenv("AZURE_SPEECH_ENDPOINT", "").rstrip("/")
     AZURE_STT_LANGUAGE = os.getenv("AZURE_STT_LANGUAGE", "en-US")
     AZURE_TTS_VOICE = os.getenv("AZURE_TTS_VOICE", "en-US-JennyNeural")
 

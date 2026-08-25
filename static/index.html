@@ -356,6 +356,7 @@
     let audioContext = null;
     let mediaStream = null;
     let scriptProcessor = null;
+    let wsConnectPromise = null;
 
     const micOrb = document.getElementById('micOrb');
     const streamBtn = document.getElementById('streamBtn');
@@ -370,18 +371,27 @@
     }
 
     function connectWebSocket() {
-      if (ws && ws.readyState === WebSocket.OPEN) return;
-      ws = new WebSocket(getWsUrl());
+      if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(ws);
+      if (ws && ws.readyState === WebSocket.CONNECTING && wsConnectPromise) return wsConnectPromise;
 
-      ws.onopen = () => {
-        connStatus.innerHTML = '<div class="status-dot"></div><span>Connected</span>';
-      };
+      ws = new WebSocket(getWsUrl());
+      wsConnectPromise = new Promise((resolve, reject) => {
+        ws.onopen = () => {
+          connStatus.innerHTML = '<div class="status-dot"></div><span>Connected</span>';
+          resolve(ws);
+        };
+
+        ws.onerror = (event) => {
+          reject(event);
+        };
+      });
 
       ws.onmessage = async (event) => {
         if (typeof event.data === "string") {
           const data = JSON.parse(event.data);
-          if (data.type === "transcription") {
-            addMessageBubble(data.role, data.text);
+          if (data.type === "transcript") {
+            const role = data.speaker === 'ai' ? 'assistant' : data.speaker;
+            addMessageBubble(role, data.text);
           }
         } else if (event.data instanceof Blob) {
           // Play received raw audio response
@@ -392,7 +402,10 @@
 
       ws.onclose = () => {
         connStatus.innerHTML = '<div class="status-dot" style="background:#ef4444;box-shadow:0 0 10px #ef4444;"></div><span>Disconnected</span>';
+        wsConnectPromise = null;
       };
+
+      return wsConnectPromise;
     }
 
     function addMessageBubble(role, text) {
@@ -412,8 +425,8 @@
     }
 
     async function startRecording() {
-      connectWebSocket();
       try {
+        await connectWebSocket();
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         const source = audioContext.createMediaStreamSource(mediaStream);
@@ -458,12 +471,12 @@
       streamBtn.innerText = 'Start Voice Session';
     }
 
-    function sendTextMessage() {
+    async function sendTextMessage() {
       const input = document.getElementById('textInput');
       const text = input.value.trim();
       if (!text) return;
 
-      connectWebSocket();
+      await connectWebSocket();
       addMessageBubble('user', text);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "text_message", message: text }));
@@ -522,7 +535,7 @@
     }
 
     window.addEventListener('load', () => {
-      connectWebSocket();
+      connectWebSocket().catch(() => {});
     });
   </script>
 </body>

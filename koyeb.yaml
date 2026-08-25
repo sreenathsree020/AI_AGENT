@@ -29,6 +29,8 @@ services:
         secret: true
       - key: AZURE_SPEECH_REGION
         value: "eastus"
+      - key: AZURE_SPEECH_ENDPOINT
+        value: ""
       - key: AZURE_STT_LANGUAGE
         value: "en-US"
       - key: AZURE_TTS_VOICE

@@ -2,8 +2,12 @@ import os
 import logging
 import asyncio
 import time
+import audioop
+import io
+import wave
 from typing import Optional, List, Dict
 import azure.cognitiveservices.speech as speechsdk
+import httpx
 from openai import AsyncOpenAI
 
 from config import Config
@@ -64,61 +68,81 @@ class VoiceAgent:
 
     async def speech_to_text(self, audio_bytes: bytes, is_mulaw: bool = True) -> Optional[str]:
         """
-        Convert audio to text using Azure STT.
+        Convert audio to text using Azure STT REST API.
         If is_mulaw=True: audio is 8kHz 8-bit μ-law (Exotel telephony).
         If is_mulaw=False: audio is 16kHz 16-bit PCM (Browser).
         """
-        config = self.speech_config_mulaw if is_mulaw else self.speech_config_pcm
-        if not config:
-            logger.warning("[STT] Azure Speech Config not initialized.")
+        if not self.speech_key or self.speech_key.startswith("your_"):
+            logger.warning("[STT] Azure Speech key not configured.")
+            return None
+
+        if not audio_bytes:
+            logger.debug("[STT] Empty audio buffer.")
             return None
 
         t0 = time.time()
         logger.info(f"[STT] Processing audio buffer ({len(audio_bytes)} bytes, format={'MULAW_8K' if is_mulaw else 'PCM_16K'})...")
         try:
-            if is_mulaw:
-                stream_format = speechsdk.audio.AudioStreamFormat(
-                    samples_per_second=8000,
-                    bits_per_sample=8,
-                    channels=1,
-                    wave_stream_format=speechsdk.AudioStreamWaveFormat.MULAW
-                )
-            else:
-                stream_format = speechsdk.audio.AudioStreamFormat(
-                    samples_per_second=16000,
-                    bits_per_sample=16,
-                    channels=1,
-                    wave_stream_format=speechsdk.AudioStreamWaveFormat.PCM
+            wav_audio = self._wav_16khz_pcm(audio_bytes, is_mulaw)
+            endpoint = self._stt_endpoint()
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    endpoint,
+                    params={"language": Config.AZURE_STT_LANGUAGE, "format": "simple"},
+                    headers={
+                        "Ocp-Apim-Subscription-Key": self.speech_key,
+                        "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
+                        "Accept": "application/json",
+                    },
+                    content=wav_audio,
                 )
 
-            audio_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
-            audio_stream.write(audio_bytes)
-            audio_stream.close()
-
-            audio_config = speechsdk.audio.AudioConfig(stream=audio_stream)
-            recognizer = speechsdk.SpeechRecognizer(
-                speech_config=config,
-                audio_config=audio_config
-            )
-            result = await asyncio.to_thread(recognizer.recognize_once)
             elapsed = (time.time() - t0) * 1000
 
-            if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                logger.info(f"[STT] Recognized text ({elapsed:.0f}ms): \"{result.text}\"")
-                return result.text
-            elif result.reason == speechsdk.ResultReason.NoMatch:
-                logger.debug(f"[STT] No speech recognized ({elapsed:.0f}ms).")
+            if response.status_code == 401:
+                logger.warning("[STT] Azure REST auth failed (401). Check AZURE_SPEECH_KEY and AZURE_SPEECH_REGION.")
                 return None
-            elif result.reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = speechsdk.CancellationDetails(result)
-                logger.warning(f"[STT] Canceled: reason={cancellation_details.reason}, error_details={cancellation_details.error_details}")
+            if response.status_code >= 400:
+                logger.warning(f"[STT] Azure REST failed ({response.status_code}, {elapsed:.0f}ms): {response.text[:300]}")
                 return None
-            else:
-                logger.warning(f"[STT] Recognition failed ({elapsed:.0f}ms): {result.reason}")
+
+            payload = response.json()
+            if payload.get("RecognitionStatus") == "Success" and payload.get("DisplayText"):
+                text = payload["DisplayText"]
+                logger.info(f"[STT] Recognized text ({elapsed:.0f}ms): \"{text}\"")
+                return text
+
+            status = payload.get("RecognitionStatus")
+            if status in ("NoMatch", "InitialSilenceTimeout", "BabbleTimeout"):
+                logger.debug(f"[STT] No speech recognized ({elapsed:.0f}ms): {status}")
                 return None
+
+            logger.warning(f"[STT] Recognition failed ({elapsed:.0f}ms): {payload}")
+            return None
         except Exception as e:
             logger.error(f"[STT] Error during recognition: {e}", exc_info=True)
             return None
+
+    def _stt_endpoint(self) -> str:
+        if Config.AZURE_SPEECH_ENDPOINT:
+            return f"{Config.AZURE_SPEECH_ENDPOINT}/stt/speech/recognition/conversation/cognitiveservices/v1"
+        return f"https://{self.speech_region}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
+
+    def _wav_16khz_pcm(self, audio_bytes: bytes, is_mulaw: bool) -> bytes:
+        if is_mulaw:
+            pcm_8k = audioop.ulaw2lin(audio_bytes, 2)
+            pcm_16k, _ = audioop.ratecv(pcm_8k, 2, 1, 8000, 16000, None)
+        else:
+            pcm_16k = audio_bytes
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(pcm_16k)
+        return wav_buffer.getvalue()
 
     async def text_to_speech(self, text: str, format_type: str = "mulaw") -> bytes:
         """

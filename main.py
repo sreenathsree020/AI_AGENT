@@ -3,6 +3,7 @@ import logging
 import uuid
 import asyncio
 import json
+import audioop
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -159,9 +160,16 @@ async def browser_voice(websocket: WebSocket):
     try:
         greeting = await voice_agent.generate_greeting()
         await websocket.send_json({"type": "greeting", "text": greeting})
-        audio_greeting = await voice_agent.text_to_speech(greeting)
+        audio_greeting = await voice_agent.text_to_speech(greeting, format_type="pcm")
         if audio_greeting:
             await websocket.send_bytes(audio_greeting)
+
+        pcm_audio_buffer = b""
+        speech_started = False
+        silence_chunks = 0
+        energy_threshold = 500
+        silence_chunk_limit = 3
+        min_audio_bytes = 16000
 
         while True:
             data = await websocket.receive()
@@ -169,16 +177,50 @@ async def browser_voice(websocket: WebSocket):
                 break
 
             if "bytes" in data and data["bytes"]:
-                pcm_audio = data["bytes"]
-                text = await voice_agent.speech_to_text(pcm_audio)
-                if text:
+                pcm_chunk = data["bytes"]
+
+                try:
+                    energy = audioop.rms(pcm_chunk, 2)
+                except Exception:
+                    continue
+
+                if energy > energy_threshold:
+                    if not speech_started:
+                        logger.info(f"🌐 [BROWSER VAD] Speech started (energy={energy})")
+                        speech_started = True
+                        pcm_audio_buffer = pcm_chunk
+                    else:
+                        pcm_audio_buffer += pcm_chunk
+                    silence_chunks = 0
+                    continue
+
+                if speech_started:
+                    pcm_audio_buffer += pcm_chunk
+                    silence_chunks += 1
+
+                    if silence_chunks < silence_chunk_limit:
+                        continue
+
+                    utterance = pcm_audio_buffer
+                    pcm_audio_buffer = b""
+                    speech_started = False
+                    silence_chunks = 0
+
+                    if len(utterance) < min_audio_bytes:
+                        continue
+
+                    logger.info(f"🌐 [BROWSER VAD] Speech ended. Buffer: {len(utterance)} bytes. Processing STT...")
+                    text = await voice_agent.speech_to_text(utterance, is_mulaw=False)
+                    if not text:
+                        continue
+
                     await websocket.send_json({"type": "transcript", "speaker": "user", "text": text})
                     session = session_manager.get_session(session_id) or {}
                     history = session.get("conversation", [])
                     ai_text = await voice_agent.generate_response(text, session_id, history)
                     session_manager.add_conversation_turn(session_id, text, ai_text)
                     await websocket.send_json({"type": "transcript", "speaker": "ai", "text": ai_text})
-                    audio_resp = await voice_agent.text_to_speech(ai_text)
+                    audio_resp = await voice_agent.text_to_speech(ai_text, format_type="pcm")
                     if audio_resp:
                         await websocket.send_bytes(audio_resp)
 
@@ -187,6 +229,19 @@ async def browser_voice(websocket: WebSocket):
                     msg = json.loads(data["text"])
                     if msg.get("type") == "end":
                         break
+                    if msg.get("type") == "text_message":
+                        text = str(msg.get("message", "")).strip()
+                        if not text:
+                            continue
+
+                        session = session_manager.get_session(session_id) or {}
+                        history = session.get("conversation", [])
+                        ai_text = await voice_agent.generate_response(text, session_id, history)
+                        session_manager.add_conversation_turn(session_id, text, ai_text)
+                        await websocket.send_json({"type": "transcript", "speaker": "ai", "text": ai_text})
+                        audio_resp = await voice_agent.text_to_speech(ai_text, format_type="pcm")
+                        if audio_resp:
+                            await websocket.send_bytes(audio_resp)
                 except Exception:
                     pass
 

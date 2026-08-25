@@ -70,6 +70,10 @@ class VoiceAgent:
             elif result.reason == speechsdk.ResultReason.NoMatch:
                 logger.debug(f"[STT] No speech recognized ({elapsed:.0f}ms).")
                 return None
+            elif result.reason == speechsdk.ResultReason.Canceled:
+                cancellation_details = speechsdk.CancellationDetails(result)
+                logger.warning(f"[STT] Canceled: reason={cancellation_details.reason}, error_details={cancellation_details.error_details}")
+                return None
             else:
                 logger.warning(f"[STT] Recognition failed ({elapsed:.0f}ms): {result.reason}")
                 return None
@@ -93,6 +97,10 @@ class VoiceAgent:
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
                 logger.info(f"[TTS] Synthesized {len(result.audio_data)} bytes ({elapsed:.0f}ms)")
                 return result.audio_data
+            elif result.reason == speechsdk.ResultReason.Canceled:
+                cancellation_details = speechsdk.CancellationDetails(result)
+                logger.error(f"[TTS] Canceled: reason={cancellation_details.reason}, error_details={cancellation_details.error_details}")
+                return b""
             else:
                 logger.error(f"[TTS] Synthesis failed ({elapsed:.0f}ms): {result.reason}")
                 return b""

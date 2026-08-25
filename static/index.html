@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Agent - Real-time AI Assistant Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 50% 0%, #171b26 0%, #0b0d13 100%);
+      --card-bg: rgba(22, 27, 39, 0.7);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover-border: rgba(99, 102, 241, 0.4);
+      --primary: #6366f1;
+      --primary-glow: rgba(99, 102, 241, 0.35);
+      --accent: #06b6d4;
+      --accent-glow: rgba(6, 182, 212, 0.3);
+      --danger: #ef4444;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --bubble-user: rgba(99, 102, 241, 0.15);
+      --bubble-user-border: rgba(99, 102, 241, 0.3);
+      --bubble-ai: rgba(30, 41, 59, 0.7);
+      --bubble-ai-border: rgba(255, 255, 255, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+      overflow-x: hidden;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1000px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.5rem;
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.1);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (max-width: 768px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+    }
+
+    .card h2 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    /* Voice Center UI */
+    .visualizer-card {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2.5rem 1.5rem;
+    }
+
+    .orb-container {
+      position: relative;
+      width: 150px;
+      height: 150px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 1.5rem 0;
+    }
+
+    .orb {
+      width: 110px;
+      height: 110px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #6366f1, #06b6d4);
+      box-shadow: 0 0 40px var(--primary-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      cursor: pointer;
+    }
+
+    .orb.active {
+      transform: scale(1.1);
+      box-shadow: 0 0 60px var(--accent-glow), 0 0 100px var(--primary-glow);
+      animation: ripple 1.5s infinite ease-out;
+    }
+
+    @keyframes ripple {
+      0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.6); }
+      70% { box-shadow: 0 0 0 35px rgba(99, 102, 241, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+    }
+
+    .orb svg {
+      width: 44px;
+      height: 44px;
+      fill: #ffffff;
+    }
+
+    canvas {
+      width: 100%;
+      height: 60px;
+      border-radius: 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      font-family: inherit;
+      color: white;
+      background: linear-gradient(135deg, var(--primary), #4f46e5);
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 0 4px 15px var(--primary-glow);
+      transition: transform 0.15s ease, filter 0.15s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.1);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn.danger {
+      background: linear-gradient(135deg, var(--danger), #b91c1c);
+      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
+    }
+
+    /* Transcript Log */
+    .transcript-box {
+      flex: 1;
+      min-height: 250px;
+      max-height: 350px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-right: 0.5rem;
+    }
+
+    .bubble {
+      padding: 0.85rem 1.15rem;
+      border-radius: 14px;
+      font-size: 0.95rem;
+      line-height: 1.4;
+      max-width: 85%;
+      word-wrap: break-word;
+      animation: fadeIn 0.25s ease forwards;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .bubble.user {
+      align-self: flex-end;
+      background: var(--bubble-user);
+      border: 1px solid var(--bubble-user-border);
+      color: #e0e7ff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bubble.assistant {
+      align-self: flex-start;
+      background: var(--bubble-ai);
+      border: 1px solid var(--bubble-ai-border);
+      color: #f1f5f9;
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble-role {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+      color: var(--text-muted);
+    }
+
+    /* Input Box */
+    .input-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .input-field {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+
+    .input-field:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo-container">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+        </svg>
+        <h1 style="font-size: 1.4rem; font-weight: 700;">Voice Agent Studio</h1>
+      </div>
+      <div class="status-badge" id="connStatus">
+        <div class="status-dot"></div>
+        <span>Ready</span>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <!-- Voice Controller & Visualizer -->
+      <div class="card visualizer-card">
+        <h2>Audio Streaming Engine</h2>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">
+          Click the microphone to start real-time duplex voice interaction.
+        </p>
+
+        <div class="orb-container">
+          <div class="orb" id="micOrb" onclick="toggleMicrophone()">
+            <svg id="micIcon" viewBox="0 0 24 24">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+            </svg>
+          </div>
+        </div>
+
+        <canvas id="visualizerCanvas"></canvas>
+
+        <button class="btn" id="streamBtn" onclick="toggleMicrophone()">
+          <span>Start Voice Session</span>
+        </button>
+      </div>
+
+      <!-- Live Dialogue & Transcript -->
+      <div class="card">
+        <h2>Live Conversation Transcript</h2>
+        <div class="transcript-box" id="transcriptBox">
+          <div class="bubble assistant">
+            <div class="bubble-role">Assistant</div>
+            Hello! I am your AI voice agent. Click the microphone or type below to start chatting.
+          </div>
+        </div>
+
+        <div class="input-group">
+          <input type="text" id="textInput" class="input-field" placeholder="Or type a test message..." onkeydown="handleKeyPress(event)" />
+          <button class="btn" onclick="sendTextMessage()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let isRecording = false;
+    let audioContext = null;
+    let mediaStream = null;
+    let scriptProcessor = null;
+
+    const micOrb = document.getElementById('micOrb');
+    const streamBtn = document.getElementById('streamBtn');
+    const connStatus = document.getElementById('connStatus');
+    const transcriptBox = document.getElementById('transcriptBox');
+    const canvas = document.getElementById('visualizerCanvas');
+    const canvasCtx = canvas.getContext('2d');
+
+    function getWsUrl() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}/ws/browser`;
+    }
+
+    function connectWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) return;
+      ws = new WebSocket(getWsUrl());
+
+      ws.onopen = () => {
+        connStatus.innerHTML = '<div class="status-dot"></div><span>Connected</span>';
+      };
+
+      ws.onmessage = async (event) => {
+        if (typeof event.data === "string") {
+          const data = JSON.parse(event.data);
+          if (data.type === "transcription") {
+            addMessageBubble(data.role, data.text);
+          }
+        } else if (event.data instanceof Blob) {
+          // Play received raw audio response
+          const arrayBuffer = await event.data.arrayBuffer();
+          playAudioResponse(arrayBuffer);
+        }
+      };
+
+      ws.onclose = () => {
+        connStatus.innerHTML = '<div class="status-dot" style="background:#ef4444;box-shadow:0 0 10px #ef4444;"></div><span>Disconnected</span>';
+      };
+    }
+
+    function addMessageBubble(role, text) {
+      const bubble = document.createElement('div');
+      bubble.className = `bubble ${role}`;
+      bubble.innerHTML = `<div class="bubble-role">${role === 'user' ? 'You' : 'Assistant'}</div>${text}`;
+      transcriptBox.appendChild(bubble);
+      transcriptBox.scrollTop = transcriptBox.scrollHeight;
+    }
+
+    async function toggleMicrophone() {
+      if (isRecording) {
+        stopRecording();
+      } else {
+        await startRecording();
+      }
+    }
+
+    async function startRecording() {
+      connectWebSocket();
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(mediaStream);
+
+        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+
+        scriptProcessor.onaudioprocess = (e) => {
+          if (!isRecording) return;
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            pcm16[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+          }
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(pcm16.buffer);
+          }
+        };
+
+        isRecording = true;
+        micOrb.classList.add('active');
+        streamBtn.classList.add('danger');
+        streamBtn.innerText = 'Stop Voice Session';
+        drawVisualizer();
+      } catch (err) {
+        console.error('Error accessing microphone:', err);
+        alert('Microphone access denied or not supported.');
+      }
+    }
+
+    function stopRecording() {
+      isRecording = false;
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioContext) {
+        audioContext.close();
+      }
+      micOrb.classList.remove('active');
+      streamBtn.classList.remove('danger');
+      streamBtn.innerText = 'Start Voice Session';
+    }
+
+    function sendTextMessage() {
+      const input = document.getElementById('textInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      connectWebSocket();
+      addMessageBubble('user', text);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "text_message", message: text }));
+      }
+      input.value = '';
+    }
+
+    function handleKeyPress(e) {
+      if (e.key === 'Enter') sendTextMessage();
+    }
+
+    async function playAudioResponse(arrayBuffer) {
+      try {
+        const playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const int16View = new Int16Array(arrayBuffer);
+        const float32Data = new Float32Array(int16View.length);
+        for (let i = 0; i < int16View.length; i++) {
+          float32Data[i] = int16View[i] / 32768.0;
+        }
+
+        const audioBuf = playCtx.createBuffer(1, float32Data.length, 16000);
+        audioBuf.copyToChannel(float32Data, 0);
+
+        const source = playCtx.createBufferSource();
+        source.buffer = audioBuf;
+        source.connect(playCtx.destination);
+        source.start();
+      } catch (e) {
+        console.error("Audio playback error:", e);
+      }
+    }
+
+    function drawVisualizer() {
+      if (!isRecording) {
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      requestAnimationFrame(drawVisualizer);
+      canvasCtx.fillStyle = 'rgba(15, 23, 42, 0.3)';
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+      canvasCtx.lineWidth = 2;
+      canvasCtx.strokeStyle = '#6366f1';
+      canvasCtx.beginPath();
+
+      const sliceWidth = canvas.width / 50;
+      let x = 0;
+      for (let i = 0; i < 50; i++) {
+        const v = Math.random() * (canvas.height / 2);
+        const y = canvas.height / 2 + (Math.random() > 0.5 ? v : -v);
+        if (i === 0) canvasCtx.moveTo(x, y);
+        else canvasCtx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      canvasCtx.stroke();
+    }
+
+    window.addEventListener('load', () => {
+      connectWebSocket();
+    });
+  </script>
+</body>
+</html>

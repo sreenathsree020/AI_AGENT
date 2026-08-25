@@ -1,0 +1,80 @@
+name: voice-agent
+services:
+  - name: voice-agent
+    type: web
+    dockerfile:
+      path: Dockerfile
+    instance_type: nano
+    regions:
+      - fra
+    ports:
+      - port: 8080
+        path: /
+        protocol: http
+    routes:
+      - path: /
+        port: 8080
+    health_checks:
+      - http:
+          path: /health
+          port: 8080
+        interval: 30
+        timeout: 10
+        unhealthy_threshold: 3
+        healthy_threshold: 1
+    env:
+      # Azure Speech
+      - key: AZURE_SPEECH_KEY
+        value: ""
+        secret: true
+      - key: AZURE_SPEECH_REGION
+        value: "eastus"
+      - key: AZURE_STT_LANGUAGE
+        value: "en-US"
+      - key: AZURE_TTS_VOICE
+        value: "en-US-JennyNeural"
+
+      # OpenRouter LLM
+      - key: OPENROUTER_API_KEY
+        value: ""
+        secret: true
+      - key: OPENROUTER_ENDPOINT_URL
+        value: "https://openrouter.ai/api/v1"
+      - key: OPENROUTER_MODEL
+        value: "openrouter/free"
+      - key: MAX_TOKENS
+        value: "150"
+      - key: TEMPERATURE
+        value: "0.7"
+
+      # Redis / Valkey
+      - key: REDIS_URL
+        value: ""
+        secret: true
+      - key: SESSION_TIMEOUT
+        value: "3600"
+
+      # Exotel
+      - key: EXOTEL_ACCOUNT_SID
+        value: ""
+        secret: true
+      - key: EXOTEL_API_KEY
+        value: ""
+        secret: true
+      - key: EXOTEL_API_TOKEN
+        value: ""
+        secret: true
+      - key: EXOTEL_SUBDOMAIN
+        value: ""
+      - key: EXOTEL_PHONE_NUMBER
+        value: ""
+      - key: EXOTEL_USE_STREAM
+        value: "false"
+
+      # Server
+      - key: HOST
+        value: "0.0.0.0"
+      - key: PORT
+        value: "8080"
+      - key: KOYEB_APP_URL
+        value: ""

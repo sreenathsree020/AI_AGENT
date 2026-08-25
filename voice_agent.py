@@ -1,7 +1,8 @@
 import os
 import logging
 import asyncio
-from typing import Optional
+import time
+from typing import Optional, List, Dict
 import azure.cognitiveservices.speech as speechsdk
 from openai import AsyncOpenAI
 
@@ -46,9 +47,11 @@ class VoiceAgent:
     async def speech_to_text(self, audio_bytes: bytes) -> Optional[str]:
         """Convert audio (PCM, 16kHz, 16-bit, mono) to text using Azure STT."""
         if not self.speech_config:
-            logger.warning("Azure Speech Config not initialized.")
+            logger.warning("[STT] Azure Speech Config not initialized.")
             return None
 
+        t0 = time.time()
+        logger.info(f"[STT] Processing audio buffer ({len(audio_bytes)} bytes)...")
         try:
             audio_stream = speechsdk.audio.PushAudioInputStream()
             audio_stream.write(audio_bytes)
@@ -59,55 +62,84 @@ class VoiceAgent:
                 audio_config=audio_config
             )
             result = await asyncio.to_thread(recognizer.recognize_once)
+            elapsed = (time.time() - t0) * 1000
+
             if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                logger.info(f"[STT] Recognized text ({elapsed:.0f}ms): \"{result.text}\"")
                 return result.text
             elif result.reason == speechsdk.ResultReason.NoMatch:
-                logger.debug("No speech recognized.")
+                logger.debug(f"[STT] No speech recognized ({elapsed:.0f}ms).")
                 return None
             else:
-                logger.warning(f"STT failed: {result.reason}")
+                logger.warning(f"[STT] Recognition failed ({elapsed:.0f}ms): {result.reason}")
                 return None
         except Exception as e:
-            logger.error(f"STT error: {e}")
+            logger.error(f"[STT] Error during recognition: {e}", exc_info=True)
             return None
 
     async def text_to_speech(self, text: str) -> bytes:
         """Convert text to audio (PCM, 16kHz, 16-bit, mono) using Azure TTS."""
         if not self.speech_config:
-            logger.warning("Azure Speech Config not initialized.")
+            logger.warning("[TTS] Azure Speech Config not initialized.")
             return b""
 
+        t0 = time.time()
+        logger.info(f"[TTS] Synthesizing audio for: \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
         try:
             synthesizer = speechsdk.SpeechSynthesizer(speech_config=self.speech_config, audio_config=None)
             result = await asyncio.to_thread(synthesizer.speak_text_async(text).get)
+            elapsed = (time.time() - t0) * 1000
+
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                logger.info(f"[TTS] Synthesized {len(result.audio_data)} bytes ({elapsed:.0f}ms)")
                 return result.audio_data
             else:
-                logger.error(f"TTS failed: {result.reason}")
+                logger.error(f"[TTS] Synthesis failed ({elapsed:.0f}ms): {result.reason}")
                 return b""
         except Exception as e:
-            logger.error(f"TTS error: {e}")
+            logger.error(f"[TTS] Error during synthesis: {e}", exc_info=True)
             return b""
 
-    async def generate_response(self, user_input: str, session_id: Optional[str] = None) -> str:
-        """Generate AI response using OpenRouter / OpenAI."""
+    async def generate_response(
+        self,
+        user_input: str,
+        session_id: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """Generate AI response using OpenRouter / OpenAI with multi-turn conversation context."""
         if not self.llm_client:
-            return "Thank you for your message. The LLM API key is not configured."
+            logger.warning("[LLM] OpenRouter client not initialized.")
+            return "Thank you for calling. Our automated assistant is currently unavailable."
+
+        t0 = time.time()
+        messages = [{"role": "system", "content": self.system_prompt}]
+
+        # Append previous conversation history if available
+        if conversation_history:
+            for turn in conversation_history[-6:]:  # include up to last 6 turns
+                if turn.get("customer"):
+                    messages.append({"role": "user", "content": turn["customer"]})
+                if turn.get("agent"):
+                    messages.append({"role": "assistant", "content": turn["agent"]})
+
+        # Add current user prompt
+        messages.append({"role": "user", "content": user_input})
+        logger.info(f"[LLM] Calling model {Config.OPENROUTER_MODEL} (turns={len(messages)})...")
 
         try:
             response = await self.llm_client.chat.completions.create(
                 model=Config.OPENROUTER_MODEL,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
+                messages=messages,
                 max_tokens=Config.MAX_TOKENS,
                 temperature=Config.TEMPERATURE
             )
-            return response.choices[0].message.content.strip()
+            reply = response.choices[0].message.content.strip()
+            elapsed = (time.time() - t0) * 1000
+            logger.info(f"[LLM] Response ({elapsed:.0f}ms): \"{reply[:100]}{'...' if len(reply) > 100 else ''}\"")
+            return reply
         except Exception as e:
-            logger.error(f"OpenRouter / LLM error: {e}", exc_info=True)
-            return "I'm sorry, I'm having trouble processing your request. Please try again."
+            logger.error(f"[LLM] OpenRouter error: {e}", exc_info=True)
+            return "I apologize, I'm having a brief issue retrieving that information. How else may I assist you?"
 
     async def generate_greeting(self) -> str:
-        return "Hello! Thank you for calling our support line. How can I assist you today?"
+        return "Hello! Thank you for calling our AI support line. How can I assist you today?"

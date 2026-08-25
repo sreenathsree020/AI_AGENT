@@ -4,7 +4,7 @@ import uuid
 import asyncio
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -13,13 +13,16 @@ from voice_agent import VoiceAgent
 from session_manager import SessionManager
 from exotel_handler import ExotelHandler
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("voice_app")
 
 # Validate environment
 Config.validate()
 
-app = FastAPI(title="AI Voice Customer Support (Exotel + OpenRouter)")
+app = FastAPI(title="AI Voice Agent Backend (Exotel + Azure + OpenRouter)")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +35,23 @@ app.add_middleware(
 voice_agent = VoiceAgent()
 session_manager = SessionManager()
 exotel_handler = ExotelHandler(voice_agent, session_manager)
+
+
+async def extract_params(request: Request) -> dict:
+    """Extract parameters from Query Params, Form Data, or JSON body."""
+    params = dict(request.query_params)
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body = await request.json()
+            if isinstance(body, dict):
+                params.update(body)
+        elif "form" in content_type:
+            form = await request.form()
+            params.update(dict(form))
+    except Exception:
+        pass
+    return params
 
 
 # ----------------------- Health & Info -----------------------
@@ -52,57 +72,89 @@ async def health():
         "exotel_configured": bool(Config.EXOTEL_ACCOUNT_SID and Config.EXOTEL_API_KEY),
         "azure_configured": bool(Config.AZURE_SPEECH_KEY and not Config.AZURE_SPEECH_KEY.startswith("your_")),
         "openrouter_configured": bool(Config.OPENROUTER_API_KEY and not Config.OPENROUTER_API_KEY.startswith("your_")),
-        "openrouter_model": Config.OPENROUTER_MODEL
+        "openrouter_model": Config.OPENROUTER_MODEL,
+        "streaming_mode": Config.EXOTEL_USE_STREAM
     }
 
 
-# ----------------------- Exotel Endpoints -----------------------
-@app.post("/api/exotel/incoming")
+# ----------------------- Exotel HTTP Endpoints (GET + POST) -----------------------
+@app.api_route("/api/exotel/incoming", methods=["GET", "POST"])
+@app.api_route("/api/exotel/passthru", methods=["GET", "POST"])
 async def exotel_incoming(request: Request):
-    """Handle incoming call from Exotel. Supports Gather or Media Streams."""
-    form = await request.form()
-    call_sid = form.get("CallSid") or form.get("CallUUID") or str(uuid.uuid4())
-    from_number = form.get("From", "unknown")
-    logger.info(f"Incoming call from {from_number}, SID: {call_sid}")
+    """
+    Handle incoming call from Exotel Passthru, Dynamic URL, or Flow Builder.
+    Supports both GET and POST requests.
+    """
+    params = await extract_params(request)
+    call_sid = params.get("CallSid") or params.get("CallUUID") or params.get("Sid") or str(uuid.uuid4())
+    from_number = params.get("From") or params.get("Caller") or params.get("CallFrom") or "unknown"
+    to_number = params.get("To") or params.get("CallTo") or "unknown"
+
+    logger.info(f"📞 [INCOMING CALL] Method={request.method} | From={from_number} | To={to_number} | CallSid={call_sid}")
 
     if not session_manager.get_session(call_sid):
-        session_manager.create_session(call_sid, {"from": from_number})
+        session_manager.create_session(call_sid, {"from": from_number, "to": to_number})
 
     if Config.EXOTEL_USE_STREAM:
-        twiml = exotel_handler.incoming_call_stream(call_sid)
+        exoml = exotel_handler.incoming_call_stream(call_sid)
     else:
-        twiml = exotel_handler.incoming_call_gather(call_sid)
+        exoml = exotel_handler.incoming_call_gather(call_sid)
 
-    return Response(content=twiml, media_type="application/xml")
+    logger.info(f"📄 [EXOML RESPONSE] Returning XML to Exotel:\n{exoml}")
+    return Response(content=exoml, media_type="application/xml")
 
 
-@app.post("/api/exotel/gather-response")
+@app.api_route("/api/exotel/gather-response", methods=["GET", "POST"])
 async def exotel_gather_response(request: Request):
-    """Handle Exotel Gather speech recognition result."""
-    form = await request.form()
-    call_sid = request.query_params.get("call_sid") or form.get("CallSid") or form.get("CallUUID") or "default"
-    speech_result = form.get("SpeechResult", "")
-    logger.info(f"Gather response from {call_sid}: {speech_result}")
+    """
+    Handle Exotel Gather speech recognition result.
+    Processes speech with LLM and returns next ExoML.
+    """
+    params = await extract_params(request)
+    call_sid = params.get("call_sid") or params.get("CallSid") or params.get("CallUUID") or "default"
+    speech_result = params.get("SpeechResult") or params.get("Digits") or ""
 
-    twiml = await exotel_handler.gather_response(call_sid, speech_result)
-    return Response(content=twiml, media_type="application/xml")
+    logger.info(f"🗣️ [GATHER RESULT] CallSid={call_sid} | Speech=\"{speech_result}\"")
+    exoml = await exotel_handler.gather_response(call_sid, speech_result)
+    return Response(content=exoml, media_type="application/xml")
 
 
+@app.api_route("/api/exotel/status", methods=["GET", "POST"])
+async def exotel_status_callback(request: Request):
+    """Receive call status updates from Exotel (hangup, completed, failed)."""
+    params = await extract_params(request)
+    call_sid = params.get("CallSid") or params.get("CallUUID")
+    status = params.get("Status") or params.get("CallStatus") or "unknown"
+    logger.info(f"ℹ️ [STATUS CALLBACK] CallSid={call_sid} | Status={status}")
+
+    if status in ["completed", "failed", "busy", "no-answer", "canceled"] and call_sid:
+        session_manager.end_session(call_sid)
+
+    return JSONResponse({"status": "received"})
+
+
+# ----------------------- Exotel WebSocket Media Streaming -----------------------
 @app.websocket("/ws/exotel-stream")
-async def exotel_media_stream(websocket: WebSocket):
-    """WebSocket endpoint for Exotel Media Streams."""
-    call_sid = websocket.query_params.get("callSid", "unknown")
+@app.websocket("/ws/media")
+@app.websocket("/ws/audio")
+@app.websocket("/ws/stream")
+async def exotel_media_stream_ws(websocket: WebSocket):
+    """
+    WebSocket endpoint for Exotel VoiceBot and real-time audio media streams.
+    Handles bi-directional 8kHz μ-law audio.
+    """
+    call_sid = websocket.query_params.get("callSid") or websocket.query_params.get("call_sid") or "unknown"
     await exotel_handler.process_media_stream(websocket, call_sid)
 
 
 # ----------------------- Browser WebSocket Endpoint -----------------------
 @app.websocket("/ws/browser")
 async def browser_voice(websocket: WebSocket):
-    """WebSocket for browser audio testing."""
+    """WebSocket for browser audio testing UI."""
     await websocket.accept()
     session_id = str(uuid.uuid4())
     session_manager.create_session(session_id)
-    logger.info(f"Browser client connected: {session_id}")
+    logger.info(f"🌐 [BROWSER] Connected: {session_id}")
 
     try:
         greeting = await voice_agent.generate_greeting()
@@ -121,7 +173,9 @@ async def browser_voice(websocket: WebSocket):
                 text = await voice_agent.speech_to_text(pcm_audio)
                 if text:
                     await websocket.send_json({"type": "transcript", "speaker": "user", "text": text})
-                    ai_text = await voice_agent.generate_response(text, session_id)
+                    session = session_manager.get_session(session_id) or {}
+                    history = session.get("conversation", [])
+                    ai_text = await voice_agent.generate_response(text, session_id, history)
                     session_manager.add_conversation_turn(session_id, text, ai_text)
                     await websocket.send_json({"type": "transcript", "speaker": "ai", "text": ai_text})
                     audio_resp = await voice_agent.text_to_speech(ai_text)
@@ -137,14 +191,14 @@ async def browser_voice(websocket: WebSocket):
                     pass
 
     except WebSocketDisconnect:
-        logger.info(f"Browser client disconnected: {session_id}")
+        logger.info(f"🌐 [BROWSER] Disconnected: {session_id}")
     except Exception as e:
-        logger.error(f"Error in browser websocket: {e}")
+        logger.error(f"🌐 [BROWSER] Error: {e}", exc_info=True)
     finally:
         session_manager.end_session(session_id)
 
 
-# ----------------------- Session API -----------------------
+# ----------------------- Session Management APIs -----------------------
 @app.get("/api/session/{session_id}")
 async def get_session(session_id: str):
     session = session_manager.get_session(session_id)

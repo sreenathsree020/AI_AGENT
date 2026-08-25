@@ -85,15 +85,5 @@ class SessionManager:
             self._memory_store.pop(session_id, None)
 
     def active_count(self) -> int:
-        count = 0
-        if self.redis_client:
-            try:
-                for key in self.redis_client.scan_iter("session:*"):
-                    sid = key.split(":")[1]
-                    s = self.get_session(sid)
-                    if s and s.get("status") == "active":
-                        count += 1
-                return count
-            except Exception as e:
-                logger.warning(f"Redis active_count error: {e}")
+        """Fast count using in-memory store (always synced with Redis)."""
         return sum(1 for s in self._memory_store.values() if s.get("status") == "active")

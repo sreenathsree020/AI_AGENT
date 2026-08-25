@@ -35,8 +35,8 @@ class Config:
 
     # Server
     HOST = os.getenv("HOST", "0.0.0.0")
-    PORT = int(os.getenv("PORT", 8080))
-    KOYEB_APP_URL = os.getenv("KOYEB_APP_URL", "localhost:8080")
+    PORT = int(os.getenv("PORT", 8000))
+    KOYEB_APP_URL = os.getenv("KOYEB_APP_URL", "localhost:8000")
 
     # System Prompt
     SYSTEM_PROMPT = os.getenv(
